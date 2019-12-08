@@ -1,0 +1,461 @@
+{
+    "apiVersion": "v1",
+    "kind": "Template",
+    "labels": {
+        "template": "matomo-mariadb-template",
+        "app": "matomo"
+    },
+    "message": "The Matomo service have been created in your project.\nYou can check your URL for Matomo on your OpenShift Overview page.\n\nIt's time to start initial configuration for Matomo by accessing your URL with following database credentials:\n\n       Username: matomo\n       Password: ${MYSQL_PASSWORD}\n  Database Name: matomo\n Connection URL: mysql://${DB_SERVICE_NAME}:3306/\n\nYou can check these credentials later through the [Resources] > [Secrets] page on your dashboard.",
+    "metadata": {
+        "annotations": {
+            "description": "Matomo, open source web analytics platform with MariaDB. You must have at least 2 persistent volumes available in your cluster to use this template.",
+            "openshift.io/display-name": "Matomo + MariaDB",
+            "openshift.io/documentation-url": "https://github.com/kurokobo/openshift-matomo/blob/master/README.md"
+        },
+        "name": "matomo-mariadb"
+    },
+    "objects": [
+        {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {
+                "annotations": {
+                    "template.openshift.io/expose-database_name": "{.data['database-name']}",
+                    "template.openshift.io/expose-password": "{.data['database-password']}",
+                    "template.openshift.io/expose-root_password": "{.data['database-root-password']}",
+                    "template.openshift.io/expose-username": "{.data['database-user']}"
+                },
+                "name": "${DB_SERVICE_NAME}"
+            },
+            "stringData": {
+                "database-name": "matomo",
+                "database-password": "${MYSQL_PASSWORD}",
+                "database-root-password": "${MYSQL_ROOT_PASSWORD}",
+                "database-user": "matomo"
+            }
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {
+                "annotations": {
+                    "template.openshift.io/expose-uri": "mysql://{.spec.clusterIP}:{.spec.ports[?(.name==\"${DB_SERVICE_NAME}\")].port}"
+                },
+                "name": "${DB_SERVICE_NAME}"
+            },
+            "spec": {
+                "ports": [
+                    {
+                        "name": "${DB_SERVICE_NAME}",
+                        "port": 3306
+                    }
+                ],
+                "selector": {
+                    "name": "${DB_SERVICE_NAME}"
+                }
+            }
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {
+                "name": "${WEB_SERVICE_NAME}"
+            },
+            "spec": {
+                "ports": [
+                    {
+                        "name": "${WEB_SERVICE_NAME}",
+                        "port": 80
+                    }
+                ],
+                "selector": {
+                    "name": "${WEB_SERVICE_NAME}"
+                }
+            }
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "PersistentVolumeClaim",
+            "metadata": {
+                "name": "${DB_SERVICE_NAME}-data"
+            },
+            "spec": {
+                "accessModes": [
+                    "ReadWriteOnce"
+                ],
+                "resources": {
+                    "requests": {
+                        "storage": "${DB_VOLUME_CAPACITY}"
+                    }
+                }
+            }
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "PersistentVolumeClaim",
+            "metadata": {
+                "name": "${WEB_SERVICE_NAME}-data"
+            },
+            "spec": {
+                "accessModes": [
+                    "ReadWriteOnce"
+                ],
+                "resources": {
+                    "requests": {
+                        "storage": "${WEB_VOLUME_CAPACITY}"
+                    }
+                }
+            }
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "ImageStream",
+            "metadata": {
+                "name": "${WEB_SERVICE_NAME}"
+            },
+            "spec": {
+                "lookupPolicy": {
+                    "local": false
+                },
+                "tags": [
+                    {
+                        "name": "3.13.0-apache",
+                        "from": {
+                            "name": "matomo:3.13.0-apache",
+                            "kind": "DockerImage"
+                        },
+                        "importPolicy": {},
+                        "referencePolicy": {
+                            "type": "Source"
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "kind": "Route",
+            "apiVersion": "v1",
+            "metadata": {
+                "name": "${WEB_SERVICE_NAME}"
+            },
+            "spec": {
+                "host": "${MATOMO_HOSTNAME}",
+                "to": {
+                    "kind": "Service",
+                    "name": "${WEB_SERVICE_NAME}",
+                    "weight": 100
+                },
+                "port": {
+                    "targetPort": "${WEB_SERVICE_NAME}"
+                },
+                "wildcardPolicy": "None"
+            }
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "DeploymentConfig",
+            "metadata": {
+                "annotations": {
+                    "template.alpha.openshift.io/wait-for-ready": "true"
+                },
+                "name": "${WEB_SERVICE_NAME}"
+            },
+            "spec": {
+                "replicas": 1,
+                "selector": {
+                    "name": "${WEB_SERVICE_NAME}"
+                },
+                "strategy": {
+                    "type": "Recreate"
+                },
+                "template": {
+                    "metadata": {
+                        "labels": {
+                            "name": "${WEB_SERVICE_NAME}"
+                        }
+                    },
+                    "spec": {
+                        "containers": [
+                            {
+                                "name": "${WEB_SERVICE_NAME}",
+                                "image": "${WEB_SERVICE_NAME}:3.13.0-apache",
+                                "imagePullPolicy": "IfNotPresent",
+                                "ports": [
+                                    {
+                                        "containerPort": 80,
+                                        "protocol": "TCP"
+                                    }
+                                ],
+                                "livenessProbe": {
+                                    "httpGet": {
+                                        "path": "/",
+                                        "port": 80,
+                                        "scheme": "HTTP"
+                                    },
+                                    "initialDelaySeconds": 5,
+                                    "timeoutSeconds": 1,
+                                    "periodSeconds": 10,
+                                    "successThreshold": 1,
+                                    "failureThreshold": 3
+                                },
+                                "readinessProbe": {
+                                    "httpGet": {
+                                        "path": "/",
+                                        "port": 80,
+                                        "scheme": "HTTP"
+                                    },
+                                    "initialDelaySeconds": 5,
+                                    "timeoutSeconds": 1,
+                                    "periodSeconds": 10,
+                                    "successThreshold": 1,
+                                    "failureThreshold": 3
+                                },
+                                "resources": {},
+                                "volumeMounts": [
+                                    {
+                                        "name": "${WEB_SERVICE_NAME}-data",
+                                        "mountPath": "/var/www/html"
+                                    }
+                                ]
+                            }
+                        ],
+                        "volumes": [
+                            {
+                                "name": "${WEB_SERVICE_NAME}-data",
+                                "persistentVolumeClaim": {
+                                    "claimName": "${WEB_SERVICE_NAME}-data"
+                                }
+                            }
+                        ],
+                        "securityContext": {},
+                        "serviceAccountName": "${ANYUID_USERNAME}",
+                        "serviceAccount": "${ANYUID_USERNAME}"
+                    }
+                },
+                "triggers": [
+                    {
+                        "imageChangeParams": {
+                            "automatic": true,
+                            "containerNames": [
+                                "${WEB_SERVICE_NAME}"
+                            ],
+                            "from": {
+                                "kind": "ImageStreamTag",
+                                "name": "${WEB_SERVICE_NAME}:3.13.0-apache"
+                            }
+                        },
+                        "type": "ImageChange"
+                    },
+                    {
+                        "type": "ConfigChange"
+                    }
+                ]
+            }
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "DeploymentConfig",
+            "metadata": {
+                "annotations": {
+                    "template.alpha.openshift.io/wait-for-ready": "true"
+                },
+                "name": "${DB_SERVICE_NAME}"
+            },
+            "spec": {
+                "replicas": 1,
+                "selector": {
+                    "name": "${DB_SERVICE_NAME}"
+                },
+                "strategy": {
+                    "type": "Recreate"
+                },
+                "template": {
+                    "metadata": {
+                        "labels": {
+                            "name": "${DB_SERVICE_NAME}"
+                        }
+                    },
+                    "spec": {
+                        "containers": [
+                            {
+                                "env": [
+                                    {
+                                        "name": "MYSQL_USER",
+                                        "valueFrom": {
+                                            "secretKeyRef": {
+                                                "key": "database-user",
+                                                "name": "${DB_SERVICE_NAME}"
+                                            }
+                                        }
+                                    },
+                                    {
+                                        "name": "MYSQL_PASSWORD",
+                                        "valueFrom": {
+                                            "secretKeyRef": {
+                                                "key": "database-password",
+                                                "name": "${DB_SERVICE_NAME}"
+                                            }
+                                        }
+                                    },
+                                    {
+                                        "name": "MYSQL_ROOT_PASSWORD",
+                                        "valueFrom": {
+                                            "secretKeyRef": {
+                                                "key": "database-root-password",
+                                                "name": "${DB_SERVICE_NAME}"
+                                            }
+                                        }
+                                    },
+                                    {
+                                        "name": "MYSQL_DATABASE",
+                                        "valueFrom": {
+                                            "secretKeyRef": {
+                                                "key": "database-name",
+                                                "name": "${DB_SERVICE_NAME}"
+                                            }
+                                        }
+                                    }
+                                ],
+                                "name": "mariadb",
+                                "image": "mariadb:10.2",
+                                "imagePullPolicy": "IfNotPresent",
+                                "ports": [
+                                    {
+                                        "containerPort": 3306
+                                    }
+                                ],
+                                "livenessProbe": {
+                                    "initialDelaySeconds": 30,
+                                    "tcpSocket": {
+                                        "port": 3306
+                                    },
+                                    "timeoutSeconds": 1
+                                },
+                                "readinessProbe": {
+                                    "exec": {
+                                        "command": [
+                                            "/bin/sh",
+                                            "-i",
+                                            "-c",
+                                            "MYSQL_PWD=\"$MYSQL_PASSWORD\" mysql -h 127.0.0.1 -u $MYSQL_USER -D $MYSQL_DATABASE -e 'SELECT 1'"
+                                        ]
+                                    },
+                                    "initialDelaySeconds": 5,
+                                    "timeoutSeconds": 1
+                                },
+                                "resources": {
+                                    "limits": {
+                                        "memory": "${MEMORY_LIMIT}"
+                                    }
+                                },
+                                "volumeMounts": [
+                                    {
+                                        "mountPath": "/var/lib/mysql/data",
+                                        "name": "${DB_SERVICE_NAME}-data"
+                                    }
+                                ]
+                            }
+                        ],
+                        "volumes": [
+                            {
+                                "name": "${DB_SERVICE_NAME}-data",
+                                "persistentVolumeClaim": {
+                                    "claimName": "${DB_SERVICE_NAME}-data"
+                                }
+                            }
+                        ]
+                    }
+                },
+                "triggers": [
+                    {
+                        "imageChangeParams": {
+                            "automatic": true,
+                            "containerNames": [
+                                "mariadb"
+                            ],
+                            "from": {
+                                "kind": "ImageStreamTag",
+                                "name": "mariadb:10.2",
+                                "namespace": "${NAMESPACE}"
+                            }
+                        },
+                        "type": "ImageChange"
+                    },
+                    {
+                        "type": "ConfigChange"
+                    }
+                ]
+            }
+        }
+    ],
+    "parameters": [
+        {
+            "description": "Public hostname for Matomo web service, e.g. www.example.com. If not specified, a hostname is generated.",
+            "displayName": "Hostname for Matomo",
+            "name": "MATOMO_HOSTNAME"
+        },
+        {
+            "description": "The username who has anyuid scc.",
+            "displayName": "Anyuid Username",
+            "name": "ANYUID_USERNAME",
+            "value": "anyuid-user"
+        },
+        {
+            "description": "Maximum amount of memory the MariaDB container can use.",
+            "displayName": "Memory Limit",
+            "name": "MEMORY_LIMIT",
+            "required": true,
+            "value": "512Mi"
+        },
+        {
+            "description": "The name of the OpenShift Service exposed for the web service.",
+            "displayName": "Web service Service Name",
+            "name": "WEB_SERVICE_NAME",
+            "required": true,
+            "value": "matomo-web"
+        },
+        {
+            "description": "The name of the OpenShift Service exposed for the database.",
+            "displayName": "Database Service Name",
+            "name": "DB_SERVICE_NAME",
+            "required": true,
+            "value": "matomo-db"
+        },
+        {
+            "description": "Password for the MariaDB connection user.",
+            "displayName": "MariaDB Connection Password",
+            "from": "[a-zA-Z0-9]{16}",
+            "generate": "expression",
+            "name": "MYSQL_PASSWORD",
+            "required": true
+        },
+        {
+            "description": "Password for the MariaDB root user.",
+            "displayName": "MariaDB root Password",
+            "from": "[a-zA-Z0-9]{16}",
+            "generate": "expression",
+            "name": "MYSQL_ROOT_PASSWORD",
+            "required": true
+        },
+        {
+            "description": "Volume space available for MariaDB, e.g. 512Mi, 2Gi.",
+            "displayName": "Volume Capacity",
+            "name": "DB_VOLUME_CAPACITY",
+            "required": true,
+            "value": "1Gi"
+        },
+        {
+            "description": "Volume space available for Matomo, e.g. 512Mi, 2Gi.",
+            "displayName": "Volume Capacity",
+            "name": "WEB_VOLUME_CAPACITY",
+            "required": true,
+            "value": "1Gi"
+        },
+        {
+            "description": "The OpenShift Namespace where the MariaDB ImageStream resides.",
+            "displayName": "Namespace",
+            "name": "NAMESPACE",
+            "value": "openshift"
+        }
+    ]
+}
